@@ -36,10 +36,8 @@ function buildInstructionEmbed() {
     .setColor(BRAND_COLOR)
     .setTitle('📝 Create Your Portfolio')
     .setDescription(
-      '**Welcome to the Portfolio Channel!**\n\n' +
-      'Use the `/portfolio` command to create or update your portfolio.\n\n' +
-      '> This channel is reserved for portfolio entries only.\n' +
-      '> All non-portfolio messages will be automatically removed.'
+      '**Use `/portfolio` to submit your portfolio**\n\n' +
+      'This channel is reserved for portfolio entries only. All non-portfolio messages will be automatically removed.'
     )
     .setTimestamp()
     .setFooter({ text: 'poolfolio • Portfolio System' });

@@ -12,35 +12,24 @@ module.exports = {
       if (!config || !config.portfolio_channel_id) return;
       if (message.channel.id !== config.portfolio_channel_id) return;
 
-      // RULE: ANY message not from this bot -> delete
-      // Even if from another bot -> delete
+      // RULE: Allow ONLY messages from THIS bot
+      // Block users, other bots, and even whitelisted users (except for slash command usage)
       if (message.author.id === message.client.user.id) return;
 
-      // Allow whitelisted roles
-      const whitelistRoles = await db.getWhitelistRoles(guildId);
-      const member = message.member;
-      if (member) {
-        const hasWhitelistedRole = member.roles.cache.some(role => whitelistRoles.includes(role.id));
-        if (hasWhitelistedRole) return;
-      }
-
-      // If it's a slash command interaction from this bot, Discord handles it differently, 
-      // but usually the interaction response is from the bot. 
-      // If a user tries to type something manually, delete it.
-
-      await message.delete().catch(err => console.error('[MESSAGE DELETE ERROR]', err));
+      // Delete everything else instantly
+      await message.delete().catch(() => {});
       
-      // Notify user (ignore other bots)
+      // Notify unauthorized users (ignore other bots)
       if (!message.author.bot) {
         const dmChannel = await message.author.createDM().catch(() => null);
         if (dmChannel) {
           await dmChannel.send(
-            `❌ **Message Deleted**\nYour message in <#${config.portfolio_channel_id}> was removed. Only portfolio submissions via \`/portfolio\` are allowed.`
+            `❌ **Strict Enforcement Active**\nOnly the bot is allowed to send messages in <#${config.portfolio_channel_id}>. Please use the \`/portfolio\` command to submit your profile.`
           ).catch(() => {});
         }
       }
     } catch (err) {
-      console.error('[EVENT ERROR] messageCreate:', err);
+      // Quiet error handling for high-frequency events
     }
   },
 };

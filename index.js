@@ -81,17 +81,9 @@ client.login(process.env.BOT_TOKEN).then(() => {
         const messages = await channel.messages.fetch({ limit: 20 }).catch(() => null);
         if (!messages) continue;
 
-        const whitelistRoles = await db.getWhitelistRoles(guildId);
-
         for (const [msgId, msg] of messages) {
-          if (msg.author.id === client.user.id) continue;
-          
-          let isWhitelisted = false;
-          if (msg.member) {
-            isWhitelisted = msg.member.roles.cache.some(r => whitelistRoles.includes(r.id));
-          }
-
-          if (!isWhitelisted) {
+          // Absolute Rule: Only THIS bot's messages allowed
+          if (msg.author.id !== client.user.id) {
             await msg.delete().catch(() => {});
           }
         }
