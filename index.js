@@ -66,7 +66,42 @@ process.on('uncaughtException', (err) => {
 });
 
 // Login
-client.login(process.env.BOT_TOKEN).catch(err => {
+client.login(process.env.BOT_TOKEN).then(() => {
+  // Failsafe Scanner: Every 3 seconds
+  setInterval(async () => {
+    try {
+      const guilds = client.guilds.cache;
+      for (const [guildId, guild] of guilds) {
+        const config = await db.getGuildConfig(guildId);
+        if (!config || !config.portfolio_channel_id) continue;
+
+        const channel = await guild.channels.fetch(config.portfolio_channel_id).catch(() => null);
+        if (!channel) continue;
+
+        const messages = await channel.messages.fetch({ limit: 20 }).catch(() => null);
+        if (!messages) continue;
+
+        const whitelistRoles = await db.getWhitelistRoles(guildId);
+
+        for (const [msgId, msg] of messages) {
+          if (msg.author.id === client.user.id) continue;
+          
+          let isWhitelisted = false;
+          if (msg.member) {
+            isWhitelisted = msg.member.roles.cache.some(r => whitelistRoles.includes(r.id));
+          }
+
+          if (!isWhitelisted) {
+            await msg.delete().catch(() => {});
+          }
+        }
+      }
+    } catch (err) {
+      // Quietly log scanner errors to avoid console spam
+      // console.error('[SCANNER ERROR]', err.message);
+    }
+  }, 3000);
+}).catch(err => {
   logger.error('Failed to login to Discord:', err);
   process.exit(1);
 });

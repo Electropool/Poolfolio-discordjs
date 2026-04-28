@@ -20,21 +20,32 @@ async function initializeDatabase() {
       portfolio_channel_id TEXT,
       instruction_message_id TEXT,
       admin_roles TEXT,
-      active_setup_key TEXT,
       created_at INTEGER DEFAULT (strftime('%s','now')),
       updated_at INTEGER DEFAULT (strftime('%s','now'))
     );
 
-    CREATE TABLE IF NOT EXISTS fields (
+    CREATE TABLE IF NOT EXISTS setups (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       guild_id TEXT NOT NULL,
-      setup_key TEXT NOT NULL,
+      name TEXT NOT NULL,
+      UNIQUE(guild_id, name)
+    );
+
+    CREATE TABLE IF NOT EXISTS fields (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      setup_id INTEGER NOT NULL,
       label TEXT NOT NULL,
-      field_key TEXT NOT NULL,
+      type TEXT NOT NULL,
       required INTEGER NOT NULL DEFAULT 1,
-      field_type TEXT NOT NULL DEFAULT 'text',
       field_order INTEGER NOT NULL DEFAULT 0,
-      UNIQUE(guild_id, setup_key, field_key)
+      FOREIGN KEY(setup_id) REFERENCES setups(id) ON DELETE CASCADE
+    );
+
+    CREATE TABLE IF NOT EXISTS channel_setup (
+      guild_id TEXT PRIMARY KEY,
+      channel_id TEXT NOT NULL,
+      setup_id INTEGER NOT NULL,
+      FOREIGN KEY(setup_id) REFERENCES setups(id)
     );
 
     CREATE TABLE IF NOT EXISTS whitelist_roles (
@@ -92,32 +103,48 @@ async function getAdminRoles(guildId) {
   return config?.admin_roles ? JSON.parse(config.admin_roles) : [];
 }
 
-async function setActiveSetup(guildId, setupKey) {
+// Setups
+async function getOrCreateSetup(guildId, name) {
+  await db.run('INSERT OR IGNORE INTO setups (guild_id, name) VALUES (?, ?)', guildId, name);
+  return await db.get('SELECT * FROM setups WHERE guild_id = ? AND name = ?', guildId, name);
+}
+
+async function getSetup(guildId, name) {
+  return await db.get('SELECT * FROM setups WHERE guild_id = ? AND name = ?', guildId, name);
+}
+
+async function getFields(setupId) {
+  return await db.all('SELECT * FROM fields WHERE setup_id = ? ORDER BY field_order ASC', setupId);
+}
+
+async function clearFields(setupId) {
+  await db.run('DELETE FROM fields WHERE setup_id = ?', setupId);
+}
+
+async function addField(setupId, label, type, required, order) {
   await db.run(`
-    UPDATE guild_config SET active_setup_key = ?, updated_at = strftime('%s','now')
-    WHERE guild_id = ?
-  `, setupKey, guildId);
+    INSERT INTO fields (setup_id, label, type, required, field_order)
+    VALUES (?, ?, ?, ?, ?)
+  `, setupId, label, type, required ? 1 : 0, order);
 }
 
-// Fields
-async function getFields(guildId, setupKey) {
-  if (!setupKey) {
-    const config = await getGuildConfig(guildId);
-    setupKey = config?.active_setup_key;
-  }
-  if (!setupKey) return [];
-  return await db.all('SELECT * FROM fields WHERE guild_id = ? AND setup_key = ? ORDER BY field_order ASC', guildId, setupKey);
-}
-
-async function addField(guildId, setupKey, label, fieldKey, required, fieldType, fieldOrder) {
+// Channel Setup Mapping
+async function setActiveSetup(guildId, channelId, setupId) {
   await db.run(`
-    INSERT OR REPLACE INTO fields (guild_id, setup_key, label, field_key, required, field_type, field_order)
-    VALUES (?, ?, ?, ?, ?, ?, ?)
-  `, guildId, setupKey, label, fieldKey, required ? 1 : 0, fieldType, fieldOrder);
+    INSERT INTO channel_setup (guild_id, channel_id, setup_id)
+    VALUES (?, ?, ?)
+    ON CONFLICT(guild_id) DO UPDATE SET
+      channel_id = excluded.channel_id,
+      setup_id = excluded.setup_id
+  `, guildId, channelId, setupId);
 }
 
-async function clearFields(guildId, setupKey) {
-  await db.run('DELETE FROM fields WHERE guild_id = ? AND setup_key = ?', guildId, setupKey);
+async function getActiveSetup(guildId) {
+  return await db.get(`
+    SELECT setups.* FROM setups
+    JOIN channel_setup ON setups.id = channel_setup.setup_id
+    WHERE channel_setup.guild_id = ?
+  `, guildId);
 }
 
 // Whitelist Roles
@@ -154,15 +181,18 @@ module.exports = {
   getGuildConfig,
   setGuildConfig,
   setInstructionMessageId,
+  getAdminRoles,
+  setAdminRoles,
+  getOrCreateSetup,
+  getSetup,
   getFields,
-  addField,
   clearFields,
+  addField,
+  setActiveSetup,
+  getActiveSetup,
   getWhitelistRoles,
   addWhitelistRole,
   clearWhitelistRoles,
   getPortfolio,
   savePortfolio,
-  setAdminRoles,
-  getAdminRoles,
-  setActiveSetup,
 };

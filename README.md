@@ -135,6 +135,26 @@ When a user submits a portfolio:
 
 ---
 
-## 📦 Installation & Hosting
 
-Refer to the previous installation steps. Ensure you run `npm run deploy` after updating the code to register the new commands.
+---
+
+## 🐛 Troubleshooting
+
+### Interaction Failed / Command Freezes
+- Ensure the bot has **Administrator** or **Manage Guild** permissions.
+- Check the console for `[INTERACTION ERROR]`. This usually happens if the database is locked or the interaction timed out.
+- If `/setup-portfolio` freezes, restart the bot to clear any hung collectors.
+
+### Setup Not Saving
+- If `/use-setup` says "not configured", ensure you clicked **Save & Finish** at the end of the `/setup-portfolio` loop.
+- Check if `poolfolio.db` has write permissions in the file system.
+
+### Messages Not Deleting
+- The bot needs **Manage Messages** permission in the portfolio channel.
+- A **Failsafe Scanner** runs every 3 seconds to clean any missed messages. If messages persist, check if the user is in a **Whitelisted Role**.
+
+### Bot Not Starting
+- Ensure `BOT_TOKEN` and `CLIENT_ID` are correct in `.env`.
+- Run `npm install` to ensure all dependencies like `sqlite3` are correctly installed.
+
+---
