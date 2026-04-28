@@ -23,7 +23,7 @@ module.exports = {
 
   async execute(interaction) {
     const guildId = interaction.guildId;
-    const config = db.getGuildConfig(guildId);
+    const config = await db.getGuildConfig(guildId);
 
     if (!config || !config.portfolio_channel_id) {
       return interaction.reply({
@@ -32,7 +32,7 @@ module.exports = {
       });
     }
 
-    const fields = db.getFields(guildId);
+    const fields = await db.getFields(guildId);
     if (fields.length === 0) {
       return interaction.reply({
         embeds: [buildErrorEmbed('No portfolio fields have been configured. An admin must add fields via `/setup`.')],
@@ -210,7 +210,7 @@ async function finalizePortfolio(interaction, guildId, config, fields, data) {
     }
 
     // Delete old portfolio message if exists
-    const existing = db.getPortfolio(guildId, interaction.user.id);
+    const existing = await db.getPortfolio(guildId, interaction.user.id);
     if (existing?.message_id) {
       const oldPortfolio = await channel.messages.fetch(existing.message_id).catch(() => null);
       if (oldPortfolio) await oldPortfolio.delete().catch(() => {});
@@ -222,11 +222,11 @@ async function finalizePortfolio(interaction, guildId, config, fields, data) {
       embeds: [embed],
     });
 
-    db.savePortfolio(guildId, interaction.user.id, portfolioMsg.id, data);
+    await db.savePortfolio(guildId, interaction.user.id, portfolioMsg.id, data);
 
     // Send instruction message at bottom
     const instrMsg = await channel.send({ embeds: [buildInstructionEmbed()] });
-    db.setInstructionMessageId(guildId, instrMsg.id);
+    await db.setInstructionMessageId(guildId, instrMsg.id);
 
     await interaction.editReply({
       content: '✅ Your portfolio has been published!',

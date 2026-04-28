@@ -15,7 +15,9 @@ for (const key of requiredEnv) {
 }
 
 // Init DB
-initializeDatabase();
+(async () => {
+  await initializeDatabase();
+})();
 
 // Create client
 const client = new Client({

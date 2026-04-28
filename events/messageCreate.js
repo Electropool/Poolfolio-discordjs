@@ -9,13 +9,16 @@ module.exports = {
     if (!message.guild) return;
 
     const guildId = message.guild.id;
-    const config = db.getGuildConfig(guildId);
+    const config = await db.getGuildConfig(guildId);
 
     if (!config || !config.portfolio_channel_id) return;
     if (message.channel.id !== config.portfolio_channel_id) return;
 
+    // Inside portfolio channel:
+    // Any message NOT from: bot, slash command interaction, whitelisted roles -> MUST be deleted instantly
+
     // Check whitelist roles
-    const whitelistRoles = db.getWhitelistRoles(guildId);
+    const whitelistRoles = await db.getWhitelistRoles(guildId);
     const member = message.member;
 
     if (member) {
@@ -26,13 +29,13 @@ module.exports = {
     // Delete the message
     try {
       await message.delete();
-      logger.info(`Deleted message from ${message.author.tag} in portfolio channel (guild: ${guildId})`);
+      logger.info(`Deleted unauthorized message from ${message.author.tag} in portfolio channel (guild: ${guildId})`);
 
       // DM the user
       const dmChannel = await message.author.createDM().catch(() => null);
       if (dmChannel) {
         await dmChannel.send(
-          `❌ **Message Deleted**\nYour message in <#${config.portfolio_channel_id}> was removed because that channel only allows portfolio submissions.\n\nUse \`/portfolio\` to create your portfolio!`
+          `❌ **Message Deleted**\nYour message in <#${config.portfolio_channel_id}> was removed because that channel only allows portfolio submissions via \`/portfolio\` or from whitelisted roles.`
         ).catch(() => {});
       }
     } catch (err) {

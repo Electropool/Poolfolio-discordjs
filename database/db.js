@@ -1,18 +1,25 @@
-const Database = require('better-sqlite3');
+const sqlite3 = require('sqlite3');
+const { open } = require('sqlite');
 const path = require('path');
 const fs = require('fs');
 
 const dbDir = path.join(__dirname);
 if (!fs.existsSync(dbDir)) fs.mkdirSync(dbDir, { recursive: true });
 
-const db = new Database(path.join(dbDir, 'poolfolio.db'));
+let db;
 
-function initializeDatabase() {
-  db.exec(`
+async function initializeDatabase() {
+  db = await open({
+    filename: path.join(dbDir, 'poolfolio.db'),
+    driver: sqlite3.Database
+  });
+
+  await db.exec(`
     CREATE TABLE IF NOT EXISTS guild_config (
       guild_id TEXT PRIMARY KEY,
       portfolio_channel_id TEXT,
       instruction_message_id TEXT,
+      admin_roles TEXT,
       created_at INTEGER DEFAULT (strftime('%s','now')),
       updated_at INTEGER DEFAULT (strftime('%s','now'))
     );
@@ -50,77 +57,90 @@ function initializeDatabase() {
 }
 
 // Guild Config
-function getGuildConfig(guildId) {
-  return db.prepare('SELECT * FROM guild_config WHERE guild_id = ?').get(guildId);
+async function getGuildConfig(guildId) {
+  return await db.get('SELECT * FROM guild_config WHERE guild_id = ?', guildId);
 }
 
-function setGuildConfig(guildId, channelId) {
-  db.prepare(`
+async function setGuildConfig(guildId, channelId) {
+  await db.run(`
     INSERT INTO guild_config (guild_id, portfolio_channel_id, updated_at)
     VALUES (?, ?, strftime('%s','now'))
     ON CONFLICT(guild_id) DO UPDATE SET
       portfolio_channel_id = excluded.portfolio_channel_id,
       updated_at = excluded.updated_at
-  `).run(guildId, channelId);
+  `, guildId, channelId);
 }
 
-function setInstructionMessageId(guildId, messageId) {
-  db.prepare(`
+async function setInstructionMessageId(guildId, messageId) {
+  await db.run(`
     UPDATE guild_config SET instruction_message_id = ?, updated_at = strftime('%s','now')
     WHERE guild_id = ?
-  `).run(messageId, guildId);
+  `, messageId, guildId);
+}
+
+async function setAdminRoles(guildId, roleIds) {
+  await db.run(`
+    UPDATE guild_config SET admin_roles = ?, updated_at = strftime('%s','now')
+    WHERE guild_id = ?
+  `, JSON.stringify(roleIds), guildId);
+}
+
+async function getAdminRoles(guildId) {
+  const config = await getGuildConfig(guildId);
+  return config?.admin_roles ? JSON.parse(config.admin_roles) : [];
 }
 
 // Fields
-function getFields(guildId) {
-  return db.prepare('SELECT * FROM fields WHERE guild_id = ? ORDER BY field_order ASC').all(guildId);
+async function getFields(guildId) {
+  return await db.all('SELECT * FROM fields WHERE guild_id = ? ORDER BY field_order ASC', guildId);
 }
 
-function addField(guildId, label, fieldKey, required, fieldType, fieldOrder) {
-  db.prepare(`
+async function addField(guildId, label, fieldKey, required, fieldType, fieldOrder) {
+  await db.run(`
     INSERT OR REPLACE INTO fields (guild_id, label, field_key, required, field_type, field_order)
     VALUES (?, ?, ?, ?, ?, ?)
-  `).run(guildId, label, fieldKey, required ? 1 : 0, fieldType, fieldOrder);
+  `, guildId, label, fieldKey, required ? 1 : 0, fieldType, fieldOrder);
 }
 
-function removeField(guildId, fieldKey) {
-  db.prepare('DELETE FROM fields WHERE guild_id = ? AND field_key = ?').run(guildId, fieldKey);
+async function removeField(guildId, fieldKey) {
+  await db.run('DELETE FROM fields WHERE guild_id = ? AND field_key = ?', guildId, fieldKey);
 }
 
-function clearFields(guildId) {
-  db.prepare('DELETE FROM fields WHERE guild_id = ?').run(guildId);
+async function clearFields(guildId) {
+  await db.run('DELETE FROM fields WHERE guild_id = ?', guildId);
 }
 
 // Whitelist Roles
-function getWhitelistRoles(guildId) {
-  return db.prepare('SELECT role_id FROM whitelist_roles WHERE guild_id = ?').all(guildId).map(r => r.role_id);
+async function getWhitelistRoles(guildId) {
+  const rows = await db.all('SELECT role_id FROM whitelist_roles WHERE guild_id = ?', guildId);
+  return rows.map(r => r.role_id);
 }
 
-function addWhitelistRole(guildId, roleId) {
-  db.prepare('INSERT OR IGNORE INTO whitelist_roles (guild_id, role_id) VALUES (?, ?)').run(guildId, roleId);
+async function addWhitelistRole(guildId, roleId) {
+  await db.run('INSERT OR IGNORE INTO whitelist_roles (guild_id, role_id) VALUES (?, ?)', guildId, roleId);
 }
 
-function removeWhitelistRole(guildId, roleId) {
-  db.prepare('DELETE FROM whitelist_roles WHERE guild_id = ? AND role_id = ?').run(guildId, roleId);
+async function removeWhitelistRole(guildId, roleId) {
+  await db.run('DELETE FROM whitelist_roles WHERE guild_id = ? AND role_id = ?', guildId, roleId);
 }
 
-function clearWhitelistRoles(guildId) {
-  db.prepare('DELETE FROM whitelist_roles WHERE guild_id = ?').run(guildId);
+async function clearWhitelistRoles(guildId) {
+  await db.run('DELETE FROM whitelist_roles WHERE guild_id = ?', guildId);
 }
 
 // Portfolios
-function getPortfolio(guildId, userId) {
-  return db.prepare('SELECT * FROM portfolios WHERE guild_id = ? AND user_id = ?').get(guildId, userId);
+async function getPortfolio(guildId, userId) {
+  return await db.get('SELECT * FROM portfolios WHERE guild_id = ? AND user_id = ?', guildId, userId);
 }
 
-function savePortfolio(guildId, userId, messageId, data) {
-  db.prepare(`
+async function savePortfolio(guildId, userId, messageId, data) {
+  await db.run(`
     INSERT INTO portfolios (guild_id, user_id, message_id, data)
     VALUES (?, ?, ?, ?)
     ON CONFLICT(guild_id, user_id) DO UPDATE SET
       message_id = excluded.message_id,
       data = excluded.data
-  `).run(guildId, userId, messageId, JSON.stringify(data));
+  `, guildId, userId, messageId, JSON.stringify(data));
 }
 
 module.exports = {
@@ -138,4 +158,6 @@ module.exports = {
   clearWhitelistRoles,
   getPortfolio,
   savePortfolio,
+  setAdminRoles,
+  getAdminRoles,
 };

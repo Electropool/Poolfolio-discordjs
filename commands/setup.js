@@ -12,6 +12,8 @@ const {
   PermissionFlagsBits,
   ComponentType,
   ChannelType,
+  EmbedBuilder,
+  OverwriteType
 } = require('discord.js');
 
 const db = require('../database/db');
@@ -21,318 +23,251 @@ const logger = require('../utils/logger');
 module.exports = {
   data: new SlashCommandBuilder()
     .setName('setup')
-    .setDescription('Configure the poolfolio portfolio system')
+    .setDescription('Configure the Poolfolio portfolio system')
     .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild),
 
   async execute(interaction) {
-    if (!interaction.memberPermissions.has(PermissionFlagsBits.ManageGuild)) {
+    const guildId = interaction.guildId;
+    const adminRoles = await db.getAdminRoles(guildId);
+    const member = interaction.member;
+
+    const isAuthorized = member.permissions.has(PermissionFlagsBits.ManageGuild) || 
+                       member.roles.cache.some(role => adminRoles.includes(role.id));
+
+    if (!isAuthorized) {
       return interaction.reply({
-        embeds: [buildErrorEmbed('You need the **Manage Server** permission to use this command.')],
+        embeds: [buildErrorEmbed('You do not have permission to configure the bot. You need **Manage Server** permission or an **Admin Role** set via `/setup`.')],
         ephemeral: true,
       });
     }
 
-    await showSetupPanel(interaction, true);
+    // Permission Check (Bot)
+    const botMember = interaction.guild.members.me;
+    if (!botMember.permissions.has([PermissionFlagsBits.ManageChannels, PermissionFlagsBits.ManageRoles])) {
+      return interaction.reply({
+        embeds: [buildErrorEmbed('I am missing required permissions: **Manage Channels** and **Manage Roles**. Please grant them and try again.')],
+        ephemeral: true,
+      });
+    }
+
+    await startGuidedSetup(interaction);
   },
 };
 
-async function showSetupPanel(interaction, isFirst = false) {
-  const guildId = interaction.guildId;
-  const config = db.getGuildConfig(guildId);
-  const fields = db.getFields(guildId);
-  const roles = db.getWhitelistRoles(guildId);
+async function startGuidedSetup(interaction) {
+  let setupData = {
+    categoryId: null,
+    channelName: 'portfolio',
+    whitelistRoles: [],
+    adminRoles: []
+  };
 
-  const embed = buildSetupEmbed(config, fields, roles);
+  // Step 1: Select Category
+  const categoryRow = new ActionRowBuilder().addComponents(
+    new ChannelSelectMenuBuilder()
+      .setCustomId('setup_step1_category')
+      .setPlaceholder('Select a Category for the portfolio channel')
+      .addChannelTypes(ChannelType.GuildCategory)
+  );
 
-  const mainRow = new ActionRowBuilder().addComponents(
+  const step1Embed = new EmbedBuilder()
+    .setTitle('⚙️ Poolfolio Setup — Step 1/4')
+    .setDescription('Please select the **Category** where you want the portfolio channel to be created.')
+    .setColor(0x5865F2);
+
+  const response = await interaction.reply({
+    embeds: [step1Embed],
+    components: [categoryRow],
+    ephemeral: true
+  });
+
+  const collector = response.createMessageComponentCollector({ time: 120_000 });
+
+  collector.on('collect', async (i) => {
+    if (i.customId === 'setup_step1_category') {
+      setupData.categoryId = i.values[0];
+      await step2(i, setupData);
+    } else if (i.customId === 'setup_step2_name') {
+      await handleStep2Modal(i, setupData);
+    } else if (i.customId === 'setup_step3_whitelist') {
+      setupData.whitelistRoles = i.values;
+      await step4(i, setupData);
+    } else if (i.customId === 'setup_step4_admin') {
+      setupData.adminRoles = i.values;
+      collector.stop();
+      await finalizeSetup(i, setupData);
+    }
+  });
+}
+
+async function step2(interaction, setupData) {
+  const row = new ActionRowBuilder().addComponents(
     new ButtonBuilder()
-      .setCustomId('setup_channel')
-      .setLabel('📌 Set Channel')
+      .setCustomId('setup_step2_name')
+      .setLabel('Set Channel Name')
       .setStyle(ButtonStyle.Primary),
     new ButtonBuilder()
-      .setCustomId('setup_add_field')
-      .setLabel('➕ Add Field')
-      .setStyle(ButtonStyle.Success),
-    new ButtonBuilder()
-      .setCustomId('setup_remove_field')
-      .setLabel('🗑️ Remove Field')
-      .setStyle(ButtonStyle.Danger)
-      .setDisabled(fields.length === 0),
-    new ButtonBuilder()
-      .setCustomId('setup_roles')
-      .setLabel('🔒 Whitelist Roles')
-      .setStyle(ButtonStyle.Secondary),
-    new ButtonBuilder()
-      .setCustomId('setup_clear_fields')
-      .setLabel('🔄 Clear All Fields')
-      .setStyle(ButtonStyle.Danger)
-      .setDisabled(fields.length === 0)
+      .setCustomId('setup_step2_skip')
+      .setLabel('Use Default ("portfolio")')
+      .setStyle(ButtonStyle.Secondary)
   );
 
-  const payload = { embeds: [embed], components: [mainRow], ephemeral: true };
+  const embed = new EmbedBuilder()
+    .setTitle('⚙️ Poolfolio Setup — Step 2/4')
+    .setDescription(`Category selected: <#${setupData.categoryId}>\n\nNow, choose a name for your portfolio channel.`)
+    .setColor(0x5865F2);
 
-  if (isFirst) {
-    await interaction.reply(payload);
-  } else {
-    await interaction.editReply(payload);
-  }
+  const msg = await interaction.update({ embeds: [embed], components: [row] });
 
-  const msg = await interaction.fetchReply();
-  const collector = msg.createMessageComponentCollector({
-    time: 300_000,
-    filter: (i) => i.user.id === interaction.user.id,
-  });
+  const filter = (i) => i.user.id === interaction.user.id;
+  const btnCollector = interaction.channel.createMessageComponentCollector({ filter, time: 60_000, componentType: ComponentType.Button });
 
-  collector.on('collect', async (btnInteraction) => {
-    collector.stop();
+  btnCollector.on('collect', async (i) => {
+    btnCollector.stop();
+    if (i.customId === 'setup_step2_name') {
+      const modal = new ModalBuilder()
+        .setCustomId('setup_name_modal')
+        .setTitle('Channel Name');
+      
+      const input = new TextInputBuilder()
+        .setCustomId('channel_name_input')
+        .setLabel('Enter channel name')
+        .setValue('portfolio')
+        .setStyle(TextInputStyle.Short)
+        .setRequired(true);
+      
+      modal.addComponents(new ActionRowBuilder().addComponents(input));
+      await i.showModal(modal);
 
-    switch (btnInteraction.customId) {
-      case 'setup_channel':
-        await handleSetChannel(btnInteraction, interaction);
-        break;
-      case 'setup_add_field':
-        await handleAddField(btnInteraction, interaction);
-        break;
-      case 'setup_remove_field':
-        await handleRemoveField(btnInteraction, interaction);
-        break;
-      case 'setup_roles':
-        await handleRoles(btnInteraction, interaction);
-        break;
-      case 'setup_clear_fields':
-        await handleClearFields(btnInteraction, interaction);
-        break;
-    }
-  });
-}
-
-async function handleSetChannel(btnInteraction, rootInteraction) {
-  const row = new ActionRowBuilder().addComponents(
-    new ChannelSelectMenuBuilder()
-      .setCustomId('setup_channel_select')
-      .setPlaceholder('Select the portfolio channel')
-      .addChannelTypes(ChannelType.GuildText)
-  );
-
-  await btnInteraction.update({
-    content: '**Select the channel to use as the portfolio channel:**',
-    embeds: [],
-    components: [row],
-  });
-
-  const msg = await btnInteraction.fetchReply();
-  const selectCollector = msg.createMessageComponentCollector({
-    componentType: ComponentType.ChannelSelect,
-    time: 60_000,
-    filter: (i) => i.user.id === rootInteraction.user.id,
-  });
-
-  selectCollector.on('collect', async (selectInteraction) => {
-    selectCollector.stop();
-    const channelId = selectInteraction.values[0];
-    db.setGuildConfig(selectInteraction.guildId, channelId);
-
-    // Try to post instruction message in channel
-    try {
-      const channel = await selectInteraction.client.channels.fetch(channelId);
-      const { buildInstructionEmbed } = require('../utils/embeds');
-      const config = db.getGuildConfig(selectInteraction.guildId);
-
-      if (config.instruction_message_id) {
-        const old = await channel.messages.fetch(config.instruction_message_id).catch(() => null);
-        if (old) await old.delete().catch(() => {});
+      const modalSubmit = await i.awaitModalSubmit({ time: 60_000 }).catch(() => null);
+      if (modalSubmit) {
+        setupData.channelName = modalSubmit.fields.getTextInputValue('channel_name_input');
+        await step3(modalSubmit, setupData);
       }
-
-      const instrMsg = await channel.send({ embeds: [buildInstructionEmbed()] });
-      db.setInstructionMessageId(selectInteraction.guildId, instrMsg.id);
-    } catch (e) {
-      logger.warn('Could not post instruction message: ' + e.message);
-    }
-
-    await selectInteraction.update({
-      content: `✅ Portfolio channel set to <#${channelId}>`,
-      components: [],
-    });
-    setTimeout(() => showSetupPanel(rootInteraction), 1500);
-  });
-
-  selectCollector.on('end', async (_, reason) => {
-    if (reason === 'time') {
-      await showSetupPanel(rootInteraction);
+    } else {
+      await step3(i, setupData);
     }
   });
 }
 
-async function handleAddField(btnInteraction, rootInteraction) {
-  const modal = new ModalBuilder()
-    .setCustomId('setup_add_field_modal')
-    .setTitle('Add Portfolio Field');
-
-  modal.addComponents(
-    new ActionRowBuilder().addComponents(
-      new TextInputBuilder()
-        .setCustomId('field_label')
-        .setLabel('Field Label (e.g. Name, Age, Country)')
-        .setStyle(TextInputStyle.Short)
-        .setRequired(true)
-        .setMaxLength(50)
-    ),
-    new ActionRowBuilder().addComponents(
-      new TextInputBuilder()
-        .setCustomId('field_type')
-        .setLabel('Field Type: "text" or "number"')
-        .setStyle(TextInputStyle.Short)
-        .setRequired(true)
-        .setPlaceholder('text')
-        .setMaxLength(10)
-    ),
-    new ActionRowBuilder().addComponents(
-      new TextInputBuilder()
-        .setCustomId('field_required')
-        .setLabel('Required? "yes" or "no"')
-        .setStyle(TextInputStyle.Short)
-        .setRequired(true)
-        .setPlaceholder('yes')
-        .setMaxLength(3)
-    )
-  );
-
-  await btnInteraction.showModal(modal);
-
-  const modalSubmit = await btnInteraction
-    .awaitModalSubmit({ time: 120_000, filter: (m) => m.user.id === rootInteraction.user.id })
-    .catch(() => null);
-
-  if (!modalSubmit) return showSetupPanel(rootInteraction);
-
-  const label = modalSubmit.fields.getTextInputValue('field_label').trim();
-  const rawType = modalSubmit.fields.getTextInputValue('field_type').trim().toLowerCase();
-  const rawRequired = modalSubmit.fields.getTextInputValue('field_required').trim().toLowerCase();
-
-  const fieldType = ['text', 'number'].includes(rawType) ? rawType : 'text';
-  const required = rawRequired === 'yes' || rawRequired === 'y' || rawRequired === 'true';
-  const fieldKey = label.toLowerCase().replace(/[^a-z0-9]/g, '_').slice(0, 50);
-
-  const existingFields = db.getFields(rootInteraction.guildId);
-  const order = existingFields.length > 0 ? Math.max(...existingFields.map(f => f.field_order)) + 1 : 0;
-
-  db.addField(rootInteraction.guildId, label, fieldKey, required, fieldType, order);
-
-  await modalSubmit.update({
-    content: `✅ Field **${label}** added (type: \`${fieldType}\`, ${required ? 'required' : 'optional'})`,
-    embeds: [],
-    components: [],
-  });
-
-  setTimeout(() => showSetupPanel(rootInteraction), 1500);
-  logger.info(`Field "${label}" added for guild ${rootInteraction.guildId}`);
-}
-
-async function handleRemoveField(btnInteraction, rootInteraction) {
-  const fields = db.getFields(rootInteraction.guildId);
-  if (fields.length === 0) {
-    await btnInteraction.update({ content: 'No fields to remove.', embeds: [], components: [] });
-    return setTimeout(() => showSetupPanel(rootInteraction), 1500);
-  }
-
-  const options = fields.slice(0, 25).map(f => ({
-    label: f.label,
-    value: f.field_key,
-    description: `Type: ${f.field_type} | ${f.required ? 'Required' : 'Optional'}`,
-  }));
-
-  const row = new ActionRowBuilder().addComponents(
-    new StringSelectMenuBuilder()
-      .setCustomId('setup_remove_field_select')
-      .setPlaceholder('Select a field to remove')
-      .addOptions(options)
-  );
-
-  await btnInteraction.update({
-    content: '**Select the field you want to remove:**',
-    embeds: [],
-    components: [row],
-  });
-
-  const msg = await btnInteraction.fetchReply();
-  const selectCollector = msg.createMessageComponentCollector({
-    componentType: ComponentType.StringSelect,
-    time: 60_000,
-    filter: (i) => i.user.id === rootInteraction.user.id,
-  });
-
-  selectCollector.on('collect', async (selectInteraction) => {
-    selectCollector.stop();
-    const fieldKey = selectInteraction.values[0];
-    const field = fields.find(f => f.field_key === fieldKey);
-    db.removeField(rootInteraction.guildId, fieldKey);
-
-    await selectInteraction.update({
-      content: `🗑️ Field **${field?.label || fieldKey}** removed.`,
-      components: [],
-    });
-    setTimeout(() => showSetupPanel(rootInteraction), 1500);
-  });
-}
-
-async function handleRoles(btnInteraction, rootInteraction) {
+async function step3(interaction, setupData) {
   const row = new ActionRowBuilder().addComponents(
     new RoleSelectMenuBuilder()
-      .setCustomId('setup_role_select')
-      .setPlaceholder('Select roles to whitelist')
+      .setCustomId('setup_step3_whitelist')
+      .setPlaceholder('Select Whitelist Roles (can post portfolios)')
       .setMinValues(1)
       .setMaxValues(10)
   );
 
-  const clearRow = new ActionRowBuilder().addComponents(
-    new ButtonBuilder()
-      .setCustomId('setup_clear_roles')
-      .setLabel('🗑️ Clear All Whitelisted Roles')
-      .setStyle(ButtonStyle.Danger)
-  );
+  const embed = new EmbedBuilder()
+    .setTitle('⚙️ Poolfolio Setup — Step 3/4')
+    .setDescription(`Channel Name: **${setupData.channelName}**\n\nSelect the roles that are allowed to submit portfolios.`)
+    .setColor(0x5865F2);
 
-  await btnInteraction.update({
-    content: '**Select roles to whitelist** (they can post in the portfolio channel without deletion):\n\nOr clear all existing whitelisted roles.',
-    embeds: [],
-    components: [row, clearRow],
-  });
-
-  const msg = await btnInteraction.fetchReply();
-  const collector = msg.createMessageComponentCollector({
-    time: 60_000,
-    filter: (i) => i.user.id === rootInteraction.user.id,
-  });
-
-  collector.on('collect', async (i) => {
-    collector.stop();
-
-    if (i.customId === 'setup_clear_roles') {
-      db.clearWhitelistRoles(rootInteraction.guildId);
-      await i.update({ content: '🗑️ All whitelisted roles cleared.', components: [] });
-      return setTimeout(() => showSetupPanel(rootInteraction), 1500);
-    }
-
-    if (i.customId === 'setup_role_select') {
-      const guildId = rootInteraction.guildId;
-      db.clearWhitelistRoles(guildId);
-      for (const roleId of i.values) {
-        db.addWhitelistRole(guildId, roleId);
-      }
-      await i.update({
-        content: `✅ Whitelisted roles updated: ${i.values.map(r => `<@&${r}>`).join(', ')}`,
-        components: [],
-      });
-      setTimeout(() => showSetupPanel(rootInteraction), 1500);
-    }
-  });
+  await interaction.update({ embeds: [embed], components: [row] });
 }
 
-async function handleClearFields(btnInteraction, rootInteraction) {
-  db.clearFields(rootInteraction.guildId);
-  await btnInteraction.update({
-    content: '🔄 All portfolio fields cleared.',
-    embeds: [],
-    components: [],
-  });
-  setTimeout(() => showSetupPanel(rootInteraction), 1500);
+async function step4(interaction, setupData) {
+  const row = new ActionRowBuilder().addComponents(
+    new RoleSelectMenuBuilder()
+      .setCustomId('setup_step4_admin')
+      .setPlaceholder('Select Admin Roles (can manage bot)')
+      .setMinValues(1)
+      .setMaxValues(10)
+  );
+
+  const embed = new EmbedBuilder()
+    .setTitle('⚙️ Poolfolio Setup — Step 4/4')
+    .setDescription(`Whitelisted roles: ${setupData.whitelistRoles.map(id => `<@&${id}>`).join(', ')}\n\nFinally, select the roles that can configure the bot.`)
+    .setColor(0x5865F2);
+
+  await interaction.update({ embeds: [embed], components: [row] });
+}
+
+async function finalizeSetup(interaction, setupData) {
+  await interaction.deferUpdate();
+
+  try {
+    const guild = interaction.guild;
+    
+    // 1. Create Channel
+    const permissionOverwrites = [
+      {
+        id: guild.id, // @everyone
+        deny: [PermissionFlagsBits.SendMessages, PermissionFlagsBits.AddReactions],
+      },
+      {
+        id: guild.members.me.id, // Bot
+        allow: [
+          PermissionFlagsBits.ViewChannel,
+          PermissionFlagsBits.SendMessages,
+          PermissionFlagsBits.EmbedLinks,
+          PermissionFlagsBits.ManageMessages,
+          PermissionFlagsBits.ManageChannels,
+          PermissionFlagsBits.ManageRoles
+        ],
+      }
+    ];
+
+    for (const roleId of setupData.whitelistRoles) {
+      permissionOverwrites.push({
+        id: roleId,
+        allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages],
+      });
+    }
+
+    const channel = await guild.channels.create({
+      name: setupData.channelName,
+      type: ChannelType.GuildText,
+      parent: setupData.categoryId,
+      permissionOverwrites: permissionOverwrites
+    });
+
+    // 2. Save to DB
+    await db.setGuildConfig(guild.id, channel.id);
+    await db.clearWhitelistRoles(guild.id);
+    for (const roleId of setupData.whitelistRoles) {
+      await db.addWhitelistRole(guild.id, roleId);
+    }
+    await db.setAdminRoles(guild.id, setupData.adminRoles);
+
+    // 3. Post Guide Message
+    const guideEmbed = new EmbedBuilder()
+      .setTitle('📌 Portfolio Channel Guide')
+      .setDescription(
+        '• This channel is for structured portfolios only\n' +
+        '• Use `/portfolio` to submit your profile\n' +
+        '• Messages outside format will be deleted\n' +
+        '• Required fields must be filled\n' +
+        '• Follow format rules\n\n' +
+        '🛠 Managed by Poolfolio bot'
+      )
+      .setColor(0x00FF00);
+
+    const instrMsg = await channel.send({ embeds: [guideEmbed] });
+    await db.setInstructionMessageId(guild.id, instrMsg.id);
+
+    // 4. Final Success message
+    await interaction.editReply({
+      content: `✅ **Setup Complete!**\n\nChannel created: <#${channel.id}>\nWhitelisted roles: ${setupData.whitelistRoles.map(id => `<@&${id}>`).join(', ')}\nAdmin roles: ${setupData.adminRoles.map(id => `<@&${id}>`).join(', ')}`,
+      embeds: [],
+      components: []
+    });
+
+    // Role Position Warning
+    const botRole = guild.members.me.roles.highest;
+    const maxWhitelistRole = guild.roles.cache.filter(r => setupData.whitelistRoles.includes(r.id)).sort((a, b) => b.position - a.position).first();
+    
+    if (maxWhitelistRole && botRole.position <= maxWhitelistRole.position) {
+      logger.warn(`Bot role is below some whitelisted roles in guild ${guild.id}. Channel permissions might not work as expected.`);
+      await interaction.followup({ content: '⚠️ **Warning:** My highest role is below some of the whitelisted roles. I may not be able to manage their permissions correctly.', ephemeral: true });
+    }
+
+  } catch (error) {
+    logger.error('Setup failed', error);
+    await interaction.editReply({
+      embeds: [buildErrorEmbed(`Setup failed: ${error.message}`)],
+      components: []
+    });
+  }
 }
