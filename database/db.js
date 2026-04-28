@@ -20,6 +20,7 @@ async function initializeDatabase() {
       portfolio_channel_id TEXT,
       instruction_message_id TEXT,
       admin_roles TEXT,
+      active_setup_key TEXT,
       created_at INTEGER DEFAULT (strftime('%s','now')),
       updated_at INTEGER DEFAULT (strftime('%s','now'))
     );
@@ -27,12 +28,13 @@ async function initializeDatabase() {
     CREATE TABLE IF NOT EXISTS fields (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       guild_id TEXT NOT NULL,
+      setup_key TEXT NOT NULL,
       label TEXT NOT NULL,
       field_key TEXT NOT NULL,
       required INTEGER NOT NULL DEFAULT 1,
       field_type TEXT NOT NULL DEFAULT 'text',
       field_order INTEGER NOT NULL DEFAULT 0,
-      UNIQUE(guild_id, field_key)
+      UNIQUE(guild_id, setup_key, field_key)
     );
 
     CREATE TABLE IF NOT EXISTS whitelist_roles (
@@ -90,24 +92,32 @@ async function getAdminRoles(guildId) {
   return config?.admin_roles ? JSON.parse(config.admin_roles) : [];
 }
 
-// Fields
-async function getFields(guildId) {
-  return await db.all('SELECT * FROM fields WHERE guild_id = ? ORDER BY field_order ASC', guildId);
-}
-
-async function addField(guildId, label, fieldKey, required, fieldType, fieldOrder) {
+async function setActiveSetup(guildId, setupKey) {
   await db.run(`
-    INSERT OR REPLACE INTO fields (guild_id, label, field_key, required, field_type, field_order)
-    VALUES (?, ?, ?, ?, ?, ?)
-  `, guildId, label, fieldKey, required ? 1 : 0, fieldType, fieldOrder);
+    UPDATE guild_config SET active_setup_key = ?, updated_at = strftime('%s','now')
+    WHERE guild_id = ?
+  `, setupKey, guildId);
 }
 
-async function removeField(guildId, fieldKey) {
-  await db.run('DELETE FROM fields WHERE guild_id = ? AND field_key = ?', guildId, fieldKey);
+// Fields
+async function getFields(guildId, setupKey) {
+  if (!setupKey) {
+    const config = await getGuildConfig(guildId);
+    setupKey = config?.active_setup_key;
+  }
+  if (!setupKey) return [];
+  return await db.all('SELECT * FROM fields WHERE guild_id = ? AND setup_key = ? ORDER BY field_order ASC', guildId, setupKey);
 }
 
-async function clearFields(guildId) {
-  await db.run('DELETE FROM fields WHERE guild_id = ?', guildId);
+async function addField(guildId, setupKey, label, fieldKey, required, fieldType, fieldOrder) {
+  await db.run(`
+    INSERT OR REPLACE INTO fields (guild_id, setup_key, label, field_key, required, field_type, field_order)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+  `, guildId, setupKey, label, fieldKey, required ? 1 : 0, fieldType, fieldOrder);
+}
+
+async function clearFields(guildId, setupKey) {
+  await db.run('DELETE FROM fields WHERE guild_id = ? AND setup_key = ?', guildId, setupKey);
 }
 
 // Whitelist Roles
@@ -118,10 +128,6 @@ async function getWhitelistRoles(guildId) {
 
 async function addWhitelistRole(guildId, roleId) {
   await db.run('INSERT OR IGNORE INTO whitelist_roles (guild_id, role_id) VALUES (?, ?)', guildId, roleId);
-}
-
-async function removeWhitelistRole(guildId, roleId) {
-  await db.run('DELETE FROM whitelist_roles WHERE guild_id = ? AND role_id = ?', guildId, roleId);
 }
 
 async function clearWhitelistRoles(guildId) {
@@ -150,14 +156,13 @@ module.exports = {
   setInstructionMessageId,
   getFields,
   addField,
-  removeField,
   clearFields,
   getWhitelistRoles,
   addWhitelistRole,
-  removeWhitelistRole,
   clearWhitelistRoles,
   getPortfolio,
   savePortfolio,
   setAdminRoles,
   getAdminRoles,
+  setActiveSetup,
 };

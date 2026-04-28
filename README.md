@@ -1,6 +1,6 @@
 # poolfolio — Discord.js (Node.js)
 
-A structured portfolio/profile system for Discord servers. Users submit their profiles via interactive slash commands, and the bot enforces strict channel formatting rules.
+A structured portfolio/profile system for Discord servers with multi-template support. Users submit their profiles via interactive slash commands, and the bot enforces strict channel formatting rules.
 
 ---
 
@@ -10,7 +10,9 @@ A structured portfolio/profile system for Discord servers. Users submit their pr
 poolfolio-discordjs/
 ├── commands/
 │   ├── portfolio.js       # /portfolio command
-│   └── setup.js           # /setup command
+│   ├── setup.js           # /setup command
+│   ├── setup-portfolio.js # /setup-portfolio (Template config)
+│   └── use-setup.js       # /use-setup (Assign template)
 ├── events/
 │   ├── ready.js
 │   ├── interactionCreate.js
@@ -41,19 +43,8 @@ poolfolio-discordjs/
 5. Click **Reset Token** to generate your token — **copy it now**
 6. Go to **OAuth2 → URL Generator**:
    - Scopes: `bot`, `applications.commands`
-   - Bot Permissions: `Send Messages`, `Manage Messages`, `Embed Links`, `Read Message History`, `View Channels`
+   - Bot Permissions: `Send Messages`, `Manage Messages`, `Embed Links`, `Read Message History`, `View Channels`, `Manage Channels`, `Manage Roles`
 7. Copy the generated URL and open it in your browser to invite the bot
-
----
-
-## 🔑 Required Bot Intents
-
-| Intent | Required |
-|---|---|
-| GUILDS | ✅ |
-| GUILD_MESSAGES | ✅ |
-| MESSAGE_CONTENT | ✅ (Privileged) |
-| GUILD_MEMBERS | ✅ (Privileged) |
 
 ---
 
@@ -67,204 +58,83 @@ CLIENT_ID=your_application_client_id
 GUILD_ID=your_guild_id_for_dev   # Optional: omit for global commands
 ```
 
-**Where to find these values:**
-- `BOT_TOKEN` → Discord Developer Portal → Bot → Token
-- `CLIENT_ID` → Discord Developer Portal → General Information → Application ID
-- `GUILD_ID` → Right-click your server in Discord → Copy Server ID (Developer Mode must be on)
-
 ---
 
-## 📦 Installing Dependencies
+## 🚀 Commands Overview
 
-Requires **Node.js 18+** and **npm**.
+### ⚙️ Administrative Commands
 
-```bash
-# Clone or download the project
-cd poolfolio-discordjs
-
-# Install dependencies
-npm install
-```
-
----
-
-## 🚀 Running the Bot
-
-### Step 1: Register Slash Commands
-
-```bash
-npm run deploy
-```
-
-> If `GUILD_ID` is set, commands register instantly for that guild.  
-> Without `GUILD_ID`, global commands take up to 1 hour to propagate.
-
-### Step 2: Start the Bot
-
-```bash
-npm start
-```
-
----
-
-## 🖥️ Hosting — Local Machine
-
-```bash
-# Install dependencies
-npm install
-
-# Configure .env
-cp .env.example .env
-# Edit .env with your values
-
-# Deploy commands
-npm run deploy
-
-# Run bot
-npm start
-```
-
-To keep it running in the background on Linux/macOS:
-```bash
-npm install -g pm2
-pm2 start ecosystem.config.js
-pm2 save
-pm2 startup
-```
-
----
-
-## ☁️ Hosting — Oracle Cloud VPS (Ubuntu)
-
-### 1. Connect to your VPS
-```bash
-ssh ubuntu@<your-vps-ip>
-```
-
-### 2. Install Node.js 20
-```bash
-curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
-sudo apt-get install -y nodejs
-node --version   # Should be v20.x.x
-```
-
-### 3. Install PM2
-```bash
-sudo npm install -g pm2
-```
-
-### 4. Upload your project
-```bash
-# On your local machine:
-scp -r ./poolfolio-discordjs ubuntu@<your-vps-ip>:~/
-
-# Or clone from GitHub:
-git clone https://github.com/yourusername/poolfolio-discordjs.git
-```
-
-### 5. Install dependencies and configure
-```bash
-cd ~/poolfolio-discordjs
-npm install
-cp .env.example .env
-nano .env   # Fill in BOT_TOKEN, CLIENT_ID, GUILD_ID
-```
-
-### 6. Register commands
-```bash
-node deploy-commands.js
-```
-
-### 7. Start with PM2
-```bash
-pm2 start ecosystem.config.js
-pm2 save
-pm2 startup   # Follow the printed instructions to enable startup on reboot
-```
-
-### 8. Useful PM2 commands
-```bash
-pm2 status              # View bot status
-pm2 logs poolfolio     # View live logs
-pm2 restart poolfolio  # Restart bot
-pm2 stop poolfolio     # Stop bot
-```
-
-### 9. Open firewall (if needed)
-```bash
-sudo ufw allow ssh
-sudo ufw enable
-```
-
----
-
-## 🛠️ Using /setup
-
-> Requires **Manage Server** permission.
-
-Run `/setup` to open the interactive setup panel. You'll see buttons for:
-
-| Button | Action |
+| Command | Description |
 |---|---|
-| 📌 Set Channel | Select the portfolio channel |
-| ➕ Add Field | Add a new portfolio field |
-| 🗑️ Remove Field | Remove an existing field |
-| 🔒 Whitelist Roles | Set roles that bypass message deletion |
-| 🔄 Clear All Fields | Remove all configured fields |
+| `/setup` | Guided setup for channel creation and admin permissions. |
+| `/setup-portfolio` | Configure fields for one of the 3 templates (`setup1`, `setup2`, `setup3`). |
+| `/use-setup` | Assign a specific configured template to the portfolio channel. |
 
-### Adding a Field
-When you click **Add Field**, a modal will ask for:
-- **Field Label** — Display name (e.g. `Name`, `Age`, `Country`)
-- **Field Type** — `text` or `number`
-- **Required** — `yes` or `no`
+### 📝 User Commands
 
-### Example Field Configuration
-```
-Name     | text   | required
-Age      | number | required
-Country  | text   | required
-Language | text   | optional
-Bio      | text   | optional
-```
+| Command | Description |
+|---|---|
+| `/portfolio` | Create or update your portfolio using the active template. |
+
+---
+
+## 📘 Template System Details
+
+Each server can maintain **3 independent templates** (`setup1`, `setup2`, `setup3`).
+
+### 🛠️ Setting up a Template (`/setup-portfolio`)
+1. Run `/setup-portfolio`.
+2. Select a template slot (e.g., `setup1`).
+3. Follow the modal flow to add fields:
+   - **Label**: The name of the field (max 100 characters).
+   - **Type**: `text` or `number`.
+   - **Required**: `yes` or `no`.
+4. Add up to **10 fields** per template.
+5. Click **Save Template** to finish.
+
+### 🔌 Activating a Template (`/use-setup`)
+1. Go to the portfolio channel.
+2. Run `/use-setup`.
+3. Select the template you want to use for that channel.
+4. If the template is valid, the channel is now linked to those fields.
 
 ---
 
 ## 📝 Using /portfolio
 
-1. Run `/portfolio` in any channel
-2. Click **Start Portfolio**
-3. Fill in each modal (up to 5 fields per modal page)
-4. If you have more than 5 fields, click **Continue** between pages
-5. After completing all fields, your portfolio is published to the portfolio channel
-
-**Behavior:**
-- If you already have a portfolio, it is replaced with your new one
-- The instruction message is always kept at the bottom of the channel
-- Non-portfolio messages in the portfolio channel are automatically deleted
+1. Run `/portfolio`.
+2. The bot detects the active template for the channel.
+3. Fill in the fields via sequential modals (5 fields at a time).
+4. **Validation**:
+   - `number` fields only accept numeric digits (max 20).
+   - `text` fields accept all characters.
+   - If any required field is empty or validation fails, the process cancels.
+5. Success: Your portfolio is posted with bold labels. Labels without values (optional fields) are hidden.
 
 ---
 
-## 🔒 Channel Control
+## 🔁 Message Order Logic
 
-- Only bot messages are allowed in the portfolio channel
-- Any message from a user (not whitelisted) is instantly deleted
-- The deleted user receives a DM explaining why
+The bot automatically maintains:
+1. All [User Portfolios]
+2. One [Bot Instruction Message] always at the bottom.
 
----
-
-## ✅ Validation Rules
-
-- `number` fields reject non-numeric input
-- Required fields cannot be submitted empty
-- Field values are limited to 500 characters
+When a user submits a portfolio:
+- Their old portfolio is deleted.
+- The instruction message is deleted.
+- The new portfolio is sent.
+- A new instruction message is sent.
 
 ---
 
-## 🐛 Troubleshooting
+## 🔐 Permissions & Rules
 
-| Problem | Solution |
-|---|---|
-| Commands don't appear | Run `npm run deploy` and wait up to 1 hour for global commands |
-| Bot can't delete messages | Ensure bot has `Manage Messages` permission in the portfolio channel |
-| `MESSAGE_CONTENT` error | Enable the intent in Discord Developer Portal → Bot |
-| Bot goes offline | Use PM2: `pm2 restart poolfolio` |
+- **Manage Server** or defined **Admin Roles** can configure the bot.
+- **Whitelisted Roles** are the only ones allowed to post in the portfolio channel.
+- Any unauthorized message in the portfolio channel is instantly deleted.
+
+---
+
+## 📦 Installation & Hosting
+
+Refer to the previous installation steps. Ensure you run `npm run deploy` after updating the code to register the new commands.
