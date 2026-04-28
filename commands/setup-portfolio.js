@@ -37,7 +37,7 @@ module.exports = {
       const selectRow = new ActionRowBuilder().addComponents(
         new StringSelectMenuBuilder()
           .setCustomId('setup_template_select')
-          .setPlaceholder('Select a template to configure')
+          .setPlaceholder('Select a template (setup1, setup2, setup3)')
           .addOptions([
             { label: 'Setup 1', value: 'setup1' },
             { label: 'Setup 2', value: 'setup2' },
@@ -47,7 +47,7 @@ module.exports = {
 
       const embed = new EmbedBuilder()
         .setTitle('📋 Portfolio Template Configuration')
-        .setDescription('Select one of the 3 templates to begin.')
+        .setDescription('Select a template slot to configure your portfolio fields.')
         .setColor(0x5865F2);
 
       const response = await interaction.reply({
@@ -63,161 +63,161 @@ module.exports = {
 
       collector.on('collect', async (i) => {
         if (i.customId === 'setup_template_select') {
-          // Fix: Immediately defer to prevent freeze
+          // ALWAYS deferUpdate first to stop loading state and allow follow-up interaction
           await i.deferUpdate();
           const setupName = i.values[0];
           const setup = await db.getOrCreateSetup(guildId, setupName);
-          await startFieldLoop(i, setup);
+          await startConfiguration(i, setup);
         }
       });
 
     } catch (err) {
-      console.error('[INTERACTION ERROR] /setup-portfolio:', err);
+      console.error('[CRITICAL] /setup-portfolio error:', err);
     }
   },
 };
 
-async function startFieldLoop(interaction, setup, fields = []) {
-  const askLabel = async (prevInteraction) => {
-    // Since we are in a loop, we need to show a button that triggers the modal
-    // Because modals can't be shown directly after another modal or a select that wasn't an immediate response
-    // Wait, actually, if we just deferUpdate above, we can show a modal from the next button click.
+async function startConfiguration(interaction, setup) {
+  const fields = [];
 
+  const mainLoop = async (prevInteraction) => {
     const embed = new EmbedBuilder()
-      .setTitle(`📝 Configuring ${setup.name}`)
-      .setDescription(`Fields added: **${fields.length}/10**\n\nClick the button below to add a field.`)
+      .setTitle(`📝 Configuring: ${setup.name}`)
+      .setDescription(`Fields defined: **${fields.length}/10**\n\nClick "Add Field" to continue or "Save" to finish.`)
       .setColor(0x5865F2);
 
     const row = new ActionRowBuilder().addComponents(
       new ButtonBuilder()
-        .setCustomId('add_field_btn')
+        .setCustomId('add_field_trigger')
         .setLabel('Add Field')
         .setStyle(ButtonStyle.Primary),
       new ButtonBuilder()
-        .setCustomId('save_template_btn')
+        .setCustomId('save_setup_trigger')
         .setLabel('Save & Finish')
         .setStyle(ButtonStyle.Success)
         .setDisabled(fields.length === 0)
     );
 
-    const msg = await prevInteraction.editReply({
+    await prevInteraction.editReply({
       embeds: [embed],
-      components: [row]
-    });
-
-    const collector = msg.createMessageComponentCollector({ time: 60_000 });
-
-    collector.on('collect', async (i) => {
-      collector.stop();
-      if (i.customId === 'add_field_btn') {
-        const modal = new ModalBuilder()
-          .setCustomId('field_label_modal')
-          .setTitle('New Field Label');
-        
-        const labelInput = new TextInputBuilder()
-          .setCustomId('field_label_input')
-          .setLabel('Enter the field label (e.g. NAME)')
-          .setStyle(TextInputStyle.Short)
-          .setMaxLength(100)
-          .setRequired(true);
-
-        modal.addComponents(new ActionRowBuilder().addComponents(labelInput));
-        await i.showModal(modal);
-
-        const submitted = await i.awaitModalSubmit({ time: 60_000 }).catch(() => null);
-        if (submitted) {
-          await submitted.deferUpdate(); // Prevent freeze
-          const label = submitted.fields.getTextInputValue('field_label_input');
-          await askType(submitted, setup, fields, label);
-        }
-      } else if (i.customId === 'save_template_btn') {
-        await i.deferUpdate();
-        await saveTemplate(i, setup, fields);
-      }
-    });
-  };
-
-  const askType = async (prevInteraction, setup, fields, label) => {
-    const row = new ActionRowBuilder().addComponents(
-      new StringSelectMenuBuilder()
-        .setCustomId('field_type_select')
-        .setPlaceholder(`Select type for "${label}"`)
-        .addOptions([
-          { label: 'Text', value: 'text' },
-          { label: 'Number', value: 'number' },
-        ])
-    );
-
-    await prevInteraction.editReply({
-      content: `Step 2: Select type for **${label}**`,
       components: [row],
-      embeds: []
+      content: null
     });
 
-    const i = await prevInteraction.channel.awaitMessageComponent({ 
-      filter: (m) => m.user.id === prevInteraction.user.id,
+    const collector = (await prevInteraction.fetchReply()).createMessageComponentCollector({ 
+      componentType: ComponentType.Button, 
       time: 60_000 
-    }).catch(() => null);
-
-    if (i) {
-      await i.deferUpdate();
-      const type = i.values[0];
-      await askRequired(i, setup, fields, label, type);
-    }
-  };
-
-  const askRequired = async (prevInteraction, setup, fields, label, type) => {
-    const row = new ActionRowBuilder().addComponents(
-      new StringSelectMenuBuilder()
-        .setCustomId('field_req_select')
-        .setPlaceholder(`Is "${label}" required?`)
-        .addOptions([
-          { label: 'Required', value: 'yes' },
-          { label: 'Optional', value: 'no' },
-        ])
-    );
-
-    await prevInteraction.editReply({
-      content: `Step 3: Is **${label}** required?`,
-      components: [row]
     });
 
-    const i = await prevInteraction.channel.awaitMessageComponent({ 
-      filter: (m) => m.user.id === prevInteraction.user.id,
-      time: 60_000 
-    }).catch(() => null);
-
-    if (i) {
-      await i.deferUpdate();
-      const required = i.values[0] === 'yes';
-      fields.push({ label, type, required });
-      
-      if (fields.length >= 10) {
-        await saveTemplate(i, setup, fields);
-      } else {
-        await askLabel(i);
+    collector.on('collect', async (btnI) => {
+      collector.stop();
+      if (btnI.customId === 'add_field_trigger') {
+        await handleFieldCreation(btnI, setup, fields, mainLoop);
+      } else if (btnI.customId === 'save_setup_trigger') {
+        await btnI.deferUpdate();
+        await saveToDatabase(btnI, setup, fields);
       }
-    }
+    });
   };
 
-  await askLabel(interaction);
+  await mainLoop(interaction);
 }
 
-async function saveTemplate(interaction, setup, fields) {
+async function handleFieldCreation(interaction, setup, fields, nextStep) {
+  const modal = new ModalBuilder()
+    .setCustomId('field_modal')
+    .setTitle('Field Configuration - Step 1');
+
+  const labelInput = new TextInputBuilder()
+    .setCustomId('label_input')
+    .setLabel('Enter Label (e.g. NAME)')
+    .setStyle(TextInputStyle.Short)
+    .setMaxLength(100)
+    .setRequired(true);
+
+  modal.addComponents(new ActionRowBuilder().addComponents(labelInput));
+  await interaction.showModal(modal);
+
+  const modalSubmit = await interaction.awaitModalSubmit({ time: 60_000 }).catch(() => null);
+  if (!modalSubmit) return;
+
+  await modalSubmit.deferUpdate();
+  const label = modalSubmit.fields.getTextInputValue('label_input');
+
+  // Step 2: Select Type
+  const typeRow = new ActionRowBuilder().addComponents(
+    new StringSelectMenuBuilder()
+      .setCustomId('type_select')
+      .setPlaceholder('Select Field Type')
+      .addOptions([
+        { label: 'Text', value: 'text' },
+        { label: 'Number', value: 'number' },
+      ])
+  );
+
+  await modalSubmit.editReply({
+    content: `Step 2: Select type for **${label}**`,
+    components: [typeRow],
+    embeds: []
+  });
+
+  const typeI = await modalSubmit.channel.awaitMessageComponent({ 
+    filter: (m) => m.user.id === modalSubmit.user.id,
+    time: 60_000 
+  }).catch(() => null);
+
+  if (!typeI) return;
+  await typeI.deferUpdate();
+  const type = typeI.values[0];
+
+  // Step 3: Select Required
+  const reqRow = new ActionRowBuilder().addComponents(
+    new StringSelectMenuBuilder()
+      .setCustomId('req_select')
+      .setPlaceholder('Is this field required?')
+      .addOptions([
+        { label: 'Required', value: '1' },
+        { label: 'Optional', value: '0' },
+      ])
+  );
+
+  await typeI.editReply({
+    content: `Step 3: Is **${label}** required?`,
+    components: [reqRow]
+  });
+
+  const reqI = await typeI.channel.awaitMessageComponent({ 
+    filter: (m) => m.user.id === typeI.user.id,
+    time: 60_000 
+  }).catch(() => null);
+
+  if (!reqI) return;
+  await reqI.deferUpdate();
+  const required = reqI.values[0] === '1';
+
+  fields.push({ label, type, required });
+  
+  if (fields.length >= 10) {
+    await saveToDatabase(reqI, setup, fields);
+  } else {
+    await nextStep(reqI);
+  }
+}
+
+async function saveToDatabase(interaction, setup, fields) {
   try {
-    await db.clearFields(setup.id);
-    for (let i = 0; i < fields.length; i++) {
-      const f = fields[i];
-      await db.addField(setup.id, f.label, f.type, f.required, i);
+    await db.clearFieldsBySetupId(setup.id);
+    for (const f of fields) {
+      await db.addField(setup.id, f.label, f.type, f.required);
     }
 
     await interaction.editReply({
-      content: `✅ Template **${setup.name}** saved successfully with ${fields.length} fields.`,
+      content: `✅ Template **${setup.name}** has been saved with ${fields.length} fields.`,
       embeds: [],
       components: []
     });
   } catch (err) {
-    console.error('[DB ERROR] Failed to save template:', err);
-    await interaction.editReply({ content: '❌ Database error. Failed to save template.', components: [] });
+    console.error('[DB ERROR] Save failed:', err);
+    await interaction.editReply({ content: '❌ Database error while saving setup.', components: [] });
   }
 }

@@ -26,7 +26,6 @@ module.exports = {
         });
       }
 
-      // Check permissions
       const adminRoles = await db.getAdminRoles(guildId);
       const isAuthorized = interaction.member.permissions.has(PermissionFlagsBits.ManageGuild) || 
                            interaction.member.roles.cache.some(role => adminRoles.includes(role.id));
@@ -62,6 +61,7 @@ module.exports = {
 
       collector.on('collect', async (i) => {
         if (i.customId === 'use_setup_select') {
+          // Fix: Prevent double reply by using deferUpdate or a single followUp
           await i.deferUpdate();
           const setupName = i.values[0];
           const setup = await db.getSetup(guildId, setupName);
@@ -73,24 +73,24 @@ module.exports = {
             });
           }
 
-          const fields = await db.getFields(setup.id);
+          const fields = await db.getFieldsBySetupId(setup.id);
           if (fields.length === 0) {
             return i.followUp({
-              content: `❌ Template **${setupName}** is empty. Please use \`/setup-portfolio\` first.`,
+              content: `❌ Template **${setupName}** exists but has no fields. Use \`/setup-portfolio\` to add them.`,
               ephemeral: true
             });
           }
 
-          await db.setActiveSetup(guildId, config.portfolio_channel_id, setup.id);
+          await db.setChannelSetup(config.portfolio_channel_id, setup.id);
           await i.followUp({
-            content: `✅ Channel is now using template **${setupName}**.`,
+            content: `✅ Success! Channel <#${config.portfolio_channel_id}> is now using **${setupName}**.`,
             ephemeral: true
           });
         }
       });
 
     } catch (err) {
-      console.error('[INTERACTION ERROR] /use-setup:', err);
+      console.error('[CRITICAL] /use-setup error:', err);
     }
   },
 };

@@ -10,7 +10,7 @@ const {
   EmbedBuilder
 } = require('discord.js');
 const db = require('../database/db');
-const { buildErrorEmbed } = require('../utils/embeds');
+const { buildErrorEmbed, buildInstructionEmbed } = require('../utils/embeds');
 const logger = require('../utils/logger');
 
 module.exports = {
@@ -21,11 +21,20 @@ module.exports = {
   async execute(interaction) {
     try {
       const guildId = interaction.guildId;
-      const activeSetup = await db.getActiveSetup(guildId);
+      const config = await db.getGuildConfig(guildId);
+
+      if (!config || !config.portfolio_channel_id) {
+        return interaction.reply({
+          embeds: [buildErrorEmbed('Portfolio channel not set up. Use `/setup` first.')],
+          ephemeral: true,
+        });
+      }
+
+      const activeSetup = await db.getSetupByChannelId(config.portfolio_channel_id);
 
       if (!activeSetup) {
         return interaction.reply({
-          embeds: [buildErrorEmbed('No template is configured for this channel. Ask an admin to use `/use-setup`.')],
+          embeds: [buildErrorEmbed('No template is assigned to this channel. Use `/use-setup` first.')],
           ephemeral: true,
         });
       }
@@ -41,7 +50,7 @@ module.exports = {
         });
       }
 
-      const fields = await db.getFields(activeSetup.id);
+      const fields = await db.getFieldsBySetupId(activeSetup.id);
       if (fields.length === 0) {
         return interaction.reply({
           embeds: [buildErrorEmbed('The active template has no fields. Ask an admin to re-configure it.')],
@@ -53,7 +62,7 @@ module.exports = {
       await runPortfolioFlow(interaction, fields, collectedData, 0);
 
     } catch (err) {
-      console.error('[INTERACTION ERROR] /portfolio:', err);
+      console.error('[CRITICAL] /portfolio error:', err);
     }
   },
 };
@@ -71,10 +80,10 @@ async function runPortfolioFlow(interaction, allFields, collectedData, startInde
     const input = new TextInputBuilder()
       .setCustomId(`field_${field.id}`)
       .setLabel(field.label)
-      .setPlaceholder(field.type === 'number' ? 'Use numbers only (max 20 digits)' : 'Use characters only')
+      .setPlaceholder(field.type === 'number' ? 'Numbers only' : 'Text only')
       .setStyle(TextInputStyle.Short)
       .setRequired(field.required === 1)
-      .setMaxLength(field.type === 'number' ? 20 : 1000);
+      .setMaxLength(field.type === 'number' ? 20 : 500);
 
     modal.addComponents(new ActionRowBuilder().addComponents(input));
   }
@@ -84,8 +93,8 @@ async function runPortfolioFlow(interaction, allFields, collectedData, startInde
   } else {
     const row = new ActionRowBuilder().addComponents(
       new ButtonBuilder()
-        .setCustomId('next_modal_btn')
-        .setLabel('Continue to next part')
+        .setCustomId(`next_part_${startIndex}`)
+        .setLabel('Continue to Next Part')
         .setStyle(ButtonStyle.Primary)
     );
     const msg = await interaction.followUp({
@@ -108,14 +117,13 @@ async function runPortfolioFlow(interaction, allFields, collectedData, startInde
     const value = submitted.fields.getTextInputValue(`field_${field.id}`).trim();
     
     if (field.required === 1 && !value) {
-      return submitted.reply({ content: '❌ Required field is empty. Portfolio creation cancelled.', ephemeral: true });
+      return submitted.reply({ content: '❌ Required field is empty.', ephemeral: true });
     }
 
     if (value) {
       if (field.type === 'number') {
-        const numRegex = /^\d+$/;
-        if (!numRegex.test(value) || value.length > 20) {
-          return submitted.reply({ content: '❌ Invalid input (numbers only, max 20 digits). Please use `/portfolio` again.', ephemeral: true });
+        if (!/^\d+$/.test(value)) {
+          return submitted.reply({ content: '❌ Invalid input: Numbers only allowed for this field.', ephemeral: true });
         }
       }
       collectedData[field.label] = value;
@@ -136,7 +144,7 @@ async function finalizePortfolio(interaction, fields, data) {
     const config = await db.getGuildConfig(guildId);
     const channel = await interaction.client.channels.fetch(config.portfolio_channel_id).catch(() => null);
 
-    if (!channel) return interaction.editReply('❌ Portfolio channel not found.');
+    if (!channel) return interaction.editReply('❌ Channel not found.');
 
     const member = interaction.member;
     const embed = new EmbedBuilder()
@@ -152,7 +160,7 @@ async function finalizePortfolio(interaction, fields, data) {
     }
     embed.setDescription(description || 'No data provided.');
 
-    // Clean old messages
+    // Cleanup old messages
     if (config.instruction_message_id) {
       const oldInstr = await channel.messages.fetch(config.instruction_message_id).catch(() => null);
       if (oldInstr) await oldInstr.delete().catch(() => {});
@@ -164,6 +172,7 @@ async function finalizePortfolio(interaction, fields, data) {
       if (oldPort) await oldPort.delete().catch(() => {});
     }
 
+    // Send new
     const portMsg = await channel.send({ content: `<@${interaction.user.id}>`, embeds: [embed] });
     await db.savePortfolio(guildId, interaction.user.id, portMsg.id, data);
 
@@ -171,9 +180,9 @@ async function finalizePortfolio(interaction, fields, data) {
     const newInstr = await channel.send({ embeds: [buildInstructionEmbed()] });
     await db.setInstructionMessageId(guildId, newInstr.id);
 
-    await interaction.editReply('✅ Your portfolio has been published!');
+    await interaction.editReply('✅ Portfolio published!');
   } catch (err) {
-    console.error('[PORTFOLIO ERROR] Finalize failed:', err);
-    await interaction.editReply('❌ Error publishing portfolio.');
+    console.error('[CRITICAL] Finalize failed:', err);
+    await interaction.editReply('❌ Error publishing.');
   }
 }

@@ -14,6 +14,7 @@ async function initializeDatabase() {
     driver: sqlite3.Database
   });
 
+  // Re-creating tables to match user-specific schema exactly
   await db.exec(`
     CREATE TABLE IF NOT EXISTS guild_config (
       guild_id TEXT PRIMARY KEY,
@@ -26,26 +27,22 @@ async function initializeDatabase() {
 
     CREATE TABLE IF NOT EXISTS setups (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
-      guild_id TEXT NOT NULL,
-      name TEXT NOT NULL,
+      guild_id TEXT,
+      name TEXT,
       UNIQUE(guild_id, name)
     );
 
     CREATE TABLE IF NOT EXISTS fields (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
-      setup_id INTEGER NOT NULL,
-      label TEXT NOT NULL,
-      type TEXT NOT NULL,
-      required INTEGER NOT NULL DEFAULT 1,
-      field_order INTEGER NOT NULL DEFAULT 0,
-      FOREIGN KEY(setup_id) REFERENCES setups(id) ON DELETE CASCADE
+      setup_id INTEGER,
+      label TEXT,
+      type TEXT,
+      required INTEGER
     );
 
     CREATE TABLE IF NOT EXISTS channel_setup (
-      guild_id TEXT PRIMARY KEY,
-      channel_id TEXT NOT NULL,
-      setup_id INTEGER NOT NULL,
-      FOREIGN KEY(setup_id) REFERENCES setups(id)
+      channel_id TEXT PRIMARY KEY,
+      setup_id INTEGER
     );
 
     CREATE TABLE IF NOT EXISTS whitelist_roles (
@@ -66,7 +63,7 @@ async function initializeDatabase() {
     );
   `);
 
-  console.log('[DB] Database initialized.');
+  console.log('[DB] Database initialized with clean schema.');
 }
 
 // Guild Config
@@ -91,16 +88,16 @@ async function setInstructionMessageId(guildId, messageId) {
   `, messageId, guildId);
 }
 
+async function getAdminRoles(guildId) {
+  const config = await getGuildConfig(guildId);
+  return config?.admin_roles ? JSON.parse(config.admin_roles) : [];
+}
+
 async function setAdminRoles(guildId, roleIds) {
   await db.run(`
     UPDATE guild_config SET admin_roles = ?, updated_at = strftime('%s','now')
     WHERE guild_id = ?
   `, JSON.stringify(roleIds), guildId);
-}
-
-async function getAdminRoles(guildId) {
-  const config = await getGuildConfig(guildId);
-  return config?.admin_roles ? JSON.parse(config.admin_roles) : [];
 }
 
 // Setups
@@ -113,38 +110,36 @@ async function getSetup(guildId, name) {
   return await db.get('SELECT * FROM setups WHERE guild_id = ? AND name = ?', guildId, name);
 }
 
-async function getFields(setupId) {
-  return await db.all('SELECT * FROM fields WHERE setup_id = ? ORDER BY field_order ASC', setupId);
+async function getFieldsBySetupId(setupId) {
+  return await db.all('SELECT * FROM fields WHERE setup_id = ? ORDER BY id ASC', setupId);
 }
 
-async function clearFields(setupId) {
+async function clearFieldsBySetupId(setupId) {
   await db.run('DELETE FROM fields WHERE setup_id = ?', setupId);
 }
 
-async function addField(setupId, label, type, required, order) {
+async function addField(setupId, label, type, required) {
   await db.run(`
-    INSERT INTO fields (setup_id, label, type, required, field_order)
-    VALUES (?, ?, ?, ?, ?)
-  `, setupId, label, type, required ? 1 : 0, order);
+    INSERT INTO fields (setup_id, label, type, required)
+    VALUES (?, ?, ?, ?)
+  `, setupId, label, type, required ? 1 : 0);
 }
 
-// Channel Setup Mapping
-async function setActiveSetup(guildId, channelId, setupId) {
+// Channel Setup
+async function setChannelSetup(channelId, setupId) {
   await db.run(`
-    INSERT INTO channel_setup (guild_id, channel_id, setup_id)
-    VALUES (?, ?, ?)
-    ON CONFLICT(guild_id) DO UPDATE SET
-      channel_id = excluded.channel_id,
-      setup_id = excluded.setup_id
-  `, guildId, channelId, setupId);
+    INSERT INTO channel_setup (channel_id, setup_id)
+    VALUES (?, ?)
+    ON CONFLICT(channel_id) DO UPDATE SET setup_id = excluded.setup_id
+  `, channelId, setupId);
 }
 
-async function getActiveSetup(guildId) {
+async function getSetupByChannelId(channelId) {
   return await db.get(`
     SELECT setups.* FROM setups
     JOIN channel_setup ON setups.id = channel_setup.setup_id
-    WHERE channel_setup.guild_id = ?
-  `, guildId);
+    WHERE channel_setup.channel_id = ?
+  `, channelId);
 }
 
 // Whitelist Roles
@@ -185,11 +180,11 @@ module.exports = {
   setAdminRoles,
   getOrCreateSetup,
   getSetup,
-  getFields,
-  clearFields,
+  getFieldsBySetupId,
+  clearFieldsBySetupId,
   addField,
-  setActiveSetup,
-  getActiveSetup,
+  setChannelSetup,
+  getSetupByChannelId,
   getWhitelistRoles,
   addWhitelistRole,
   clearWhitelistRoles,

@@ -27,30 +27,34 @@ module.exports = {
     .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild),
 
   async execute(interaction) {
-    const guildId = interaction.guildId;
-    const adminRoles = await db.getAdminRoles(guildId);
-    const member = interaction.member;
+    try {
+      const guildId = interaction.guildId;
+      const adminRoles = await db.getAdminRoles(guildId);
+      const member = interaction.member;
 
-    const isAuthorized = member.permissions.has(PermissionFlagsBits.ManageGuild) || 
-                       member.roles.cache.some(role => adminRoles.includes(role.id));
+      const isAuthorized = member.permissions.has(PermissionFlagsBits.ManageGuild) || 
+                         member.roles.cache.some(role => adminRoles.includes(role.id));
 
-    if (!isAuthorized) {
-      return interaction.reply({
-        embeds: [buildErrorEmbed('You do not have permission to configure the bot. You need **Manage Server** permission or an **Admin Role** set via `/setup`.')],
-        ephemeral: true,
-      });
+      if (!isAuthorized) {
+        return interaction.reply({
+          embeds: [buildErrorEmbed('You do not have permission to configure the bot. You need **Manage Server** permission or an **Admin Role** set via `/setup`.')],
+          ephemeral: true,
+        });
+      }
+
+      // Permission Check (Bot)
+      const botMember = interaction.guild.members.me;
+      if (!botMember.permissions.has([PermissionFlagsBits.ManageChannels, PermissionFlagsBits.ManageRoles])) {
+        return interaction.reply({
+          embeds: [buildErrorEmbed('I am missing required permissions: **Manage Channels** and **Manage Roles**. Please grant them and try again.')],
+          ephemeral: true,
+        });
+      }
+
+      await startGuidedSetup(interaction);
+    } catch (err) {
+      console.error('[CRITICAL] /setup error:', err);
     }
-
-    // Permission Check (Bot)
-    const botMember = interaction.guild.members.me;
-    if (!botMember.permissions.has([PermissionFlagsBits.ManageChannels, PermissionFlagsBits.ManageRoles])) {
-      return interaction.reply({
-        embeds: [buildErrorEmbed('I am missing required permissions: **Manage Channels** and **Manage Roles**. Please grant them and try again.')],
-        ephemeral: true,
-      });
-    }
-
-    await startGuidedSetup(interaction);
   },
 };
 
@@ -85,14 +89,15 @@ async function startGuidedSetup(interaction) {
 
   collector.on('collect', async (i) => {
     if (i.customId === 'setup_step1_category') {
+      await i.deferUpdate(); // Prevent loading freeze
       setupData.categoryId = i.values[0];
       await step2(i, setupData);
-    } else if (i.customId === 'setup_step2_name') {
-      await handleStep2Modal(i, setupData);
     } else if (i.customId === 'setup_step3_whitelist') {
+      await i.deferUpdate();
       setupData.whitelistRoles = i.values;
       await step4(i, setupData);
     } else if (i.customId === 'setup_step4_admin') {
+      await i.deferUpdate();
       setupData.adminRoles = i.values;
       collector.stop();
       await finalizeSetup(i, setupData);
@@ -117,13 +122,12 @@ async function step2(interaction, setupData) {
     .setDescription(`Category selected: <#${setupData.categoryId}>\n\nNow, choose a name for your portfolio channel.`)
     .setColor(0x5865F2);
 
-  const msg = await interaction.update({ embeds: [embed], components: [row] });
+  const msg = await interaction.editReply({ embeds: [embed], components: [row] });
 
-  const filter = (i) => i.user.id === interaction.user.id;
+  const filter = (i) => i.user.id === (interaction.user || interaction.member.user).id;
   const btnCollector = interaction.channel.createMessageComponentCollector({ filter, time: 60_000, componentType: ComponentType.Button });
 
   btnCollector.on('collect', async (i) => {
-    btnCollector.stop();
     if (i.customId === 'setup_step2_name') {
       const modal = new ModalBuilder()
         .setCustomId('setup_name_modal')
@@ -141,10 +145,14 @@ async function step2(interaction, setupData) {
 
       const modalSubmit = await i.awaitModalSubmit({ time: 60_000 }).catch(() => null);
       if (modalSubmit) {
+        await modalSubmit.deferUpdate();
         setupData.channelName = modalSubmit.fields.getTextInputValue('channel_name_input');
+        btnCollector.stop();
         await step3(modalSubmit, setupData);
       }
-    } else {
+    } else if (i.customId === 'setup_step2_skip') {
+      await i.deferUpdate();
+      btnCollector.stop();
       await step3(i, setupData);
     }
   });
@@ -164,7 +172,7 @@ async function step3(interaction, setupData) {
     .setDescription(`Channel Name: **${setupData.channelName}**\n\nSelect the roles that are allowed to submit portfolios.`)
     .setColor(0x5865F2);
 
-  await interaction.update({ embeds: [embed], components: [row] });
+  await interaction.editReply({ embeds: [embed], components: [row] });
 }
 
 async function step4(interaction, setupData) {
@@ -181,16 +189,14 @@ async function step4(interaction, setupData) {
     .setDescription(`Whitelisted roles: ${setupData.whitelistRoles.map(id => `<@&${id}>`).join(', ')}\n\nFinally, select the roles that can configure the bot.`)
     .setColor(0x5865F2);
 
-  await interaction.update({ embeds: [embed], components: [row] });
+  await interaction.editReply({ embeds: [embed], components: [row] });
 }
 
 async function finalizeSetup(interaction, setupData) {
-  await interaction.deferUpdate();
-
   try {
     const guild = interaction.guild;
     
-    // 1. Create Channel
+    // Create Channel
     const permissionOverwrites = [
       {
         id: guild.id, // @everyone
@@ -223,7 +229,7 @@ async function finalizeSetup(interaction, setupData) {
       permissionOverwrites: permissionOverwrites
     });
 
-    // 2. Save to DB
+    // Save to DB
     await db.setGuildConfig(guild.id, channel.id);
     await db.clearWhitelistRoles(guild.id);
     for (const roleId of setupData.whitelistRoles) {
@@ -231,7 +237,7 @@ async function finalizeSetup(interaction, setupData) {
     }
     await db.setAdminRoles(guild.id, setupData.adminRoles);
 
-    // 3. Post Guide Message
+    // Post Guide Message
     const guideEmbed = new EmbedBuilder()
       .setTitle('📌 Portfolio Channel Guide')
       .setDescription(
@@ -247,21 +253,12 @@ async function finalizeSetup(interaction, setupData) {
     const instrMsg = await channel.send({ embeds: [guideEmbed] });
     await db.setInstructionMessageId(guild.id, instrMsg.id);
 
-    // 4. Final Success message
+    // Final Success message
     await interaction.editReply({
       content: `✅ **Setup Complete!**\n\nChannel created: <#${channel.id}>\nWhitelisted roles: ${setupData.whitelistRoles.map(id => `<@&${id}>`).join(', ')}\nAdmin roles: ${setupData.adminRoles.map(id => `<@&${id}>`).join(', ')}`,
       embeds: [],
       components: []
     });
-
-    // Role Position Warning
-    const botRole = guild.members.me.roles.highest;
-    const maxWhitelistRole = guild.roles.cache.filter(r => setupData.whitelistRoles.includes(r.id)).sort((a, b) => b.position - a.position).first();
-    
-    if (maxWhitelistRole && botRole.position <= maxWhitelistRole.position) {
-      logger.warn(`Bot role is below some whitelisted roles in guild ${guild.id}. Channel permissions might not work as expected.`);
-      await interaction.followup({ content: '⚠️ **Warning:** My highest role is below some of the whitelisted roles. I may not be able to manage their permissions correctly.', ephemeral: true });
-    }
 
   } catch (error) {
     logger.error('Setup failed', error);
